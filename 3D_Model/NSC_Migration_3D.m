@@ -1,35 +1,34 @@
-% BIDIRECTOINAL PATH GENERATION
-
-%%_________________
-%Using 5 voxel kernerl blur orientation and coherency map 
-
-%% Load data
-global eigen_map coh_map seed_sd ubound lbound cancer_sd inj_center num_cancers curr_site_num
-
-% clear all;
+clear all;
 close all;
 
 disp('Gathering data...')
-[eigen_map, coh_map] = load_3D(); 
 
-
-%% Set parameters 
+%% Set Parameters
+% Global vars initialized:  n_seeds Finaltimestep CONVERT2MICRON coh_limit chmtx_limit d_w cancer_size cancer_center ...
+%                           modelType alpha4chmtx beta4dist chemo_sensitivity d_g
 set_parameters()
-p = struct('coord',{});
 
+%% Load Anistropy Files
+% Global vars initialized:  eigen_map coh_map
+load_3D();
 
-%% Initialize a matrix of same size as the white matter image and initialize a seed point (inj center) around which the seeds for each simulation are placed
-[seed_ind,seed_sd,ubound,lbound] = set_initial(coh_map); 
+%% Set Initial
+% Global vars initialized:  seed_sd ubound lbound inj_center has_cancer
+[seed_ind,has_cancer] = set_initial();         
 
+%% Set Cancer
+% Global vars initialized:  num_cancers curr_site_num
+if has_cancer 
+    [concentration, cgradX, cgradY, cgradZ] = set_cancer();
+end
 
-%% Cancer injection
-[concentration, cgradX, cgradY, cgradZ, cancer_sd] = set_cancer(coh_map);
+%% Simulation
+global eigen_map coh_map ubound lbound inj_center num_cancers curr_site_num has_cancer
 
-
-%% For each seed
 Tstart = tic; 
 disp('Running simulation...')
 
+p = struct('coord',{});
 
 for seed_loop = 1:n_seeds
     
@@ -86,40 +85,14 @@ for seed_loop = 1:n_seeds
             pref_mvmt = 1;
         end 
 
-        
-        %%% Keep or reduce step length by some amount
-        %%%%%% uniform[0, 1] 
-%         dstep = rand(1)*dmax ; 
-        %%%%%% beta[1, beta], if beta==1, uniform 
-%         dstep = betainv( rand(1), 1, beta4dist )*d ; 
-        %%%%%% deterministic
         dstep = d; 
-
         
         %%% Calculate chemotaxis vector and gradient strength
-        chmtx_vect = [cgradX(ind); cgradY(ind); cgradZ(ind)];
+        chmtx_vect = [0;0;0];
         chmtx_bias = 0;
-        switch modelNum
-            
-            case 1  % Chemotaxis
-                % Move along chemotaxis (deterministic)
-                dstep = dstep/dmax;                                                                         % Keeps dstep deterministic (dmax is stochastic)
-                if has_cancer
-                    chmtx_bias = chemo_sensitivity;
-                end
-                
-            case 2  % Chemotaxis, Stochasticity 
-                %  Move along chemotaxis (stochasticity)
-                if has_cancer
-                    chmtx_bias = betainv(rand(1),alpha4chmtx,1) * chemo_sensitivity;
-                end
-                
-            case 3  % Chemotaxis, Chemotax threshold, Stochasticity
-                %  Move along chemotaxis once near cancer (stochasticity)
-                if has_cancer && (concentration(ind) >= chmtx_limit)
-                    chmtx_bias = betainv(rand(1),alpha4chmtx,1) * chemo_sensitivity;
-                end
-                
+        if has_cancer
+            chmtx_vect = [cgradX(ind); cgradY(ind); cgradZ(ind)];
+            chmtx_bias = betainv(rand(1),alpha4chmtx,1) * chemo_sensitivity;
         end
         
         
@@ -143,6 +116,8 @@ end
 toc( Tstart ); 
 
 
+
+
 %% Plot Graphs (use smaller p)
 disp('Plotting graphs...')
 
@@ -164,7 +139,7 @@ end
 p = p_new; clear p_new;
 xvals = (1:acc:Finaltimestep);
 
-save([pwd savethis('p','mat')], 'p');
+save(savethis('p','mat'), 'p');                                                                             %Save coordinates of each step for all NSC
 
 
 
@@ -212,7 +187,6 @@ for i=1:num_plots
 end
 figure;     boxplot( data, labels );
 hold on;    plot( (1:acc:Finaltimestep)*(num_plots/Finaltimestep), median( distInit )*CONVERT2MICRON );
-% hold on;    plot( (1:acc:Finaltimestep)*(num_plots/Finaltimestep), mean( distInit )*CONVERT2MICRON );
 
 ylim([0 max(max(data))+500]);
 xlim([0 num_plots+1]);
@@ -234,7 +208,6 @@ end
 percOnWM = numAtWM / n_seeds * 100;
 
 figure;   plot(xvals,percOnWM,'r');
-% hold on;   plot(xvals,smoothdata(percOnWM),'--','Color','black','LineWidth',2);
 
 xlabel('Time Intervals');   ylabel('Percent of NSC on WM');
 savethis('percentOnWM','jpg');
@@ -276,27 +249,6 @@ end
 
 
 
-%% Percent of WM in brain
-% figure;
-% percWM = @(x) 100 * sum(coh_map > x,'all')/sum(coh_map > 0,'all');
-% for i=1:50
-%     percWMArr(i)=percWM(i/50);
-% end
-% plot((1:50)/50,percWM((1:50)/50));
-% savethis('percentWMVolume','jpg');
-
-
-
-
-%% Plot path of seeds on and off WM
-% figure;
-% plotenvironment(coh_limit);
-% plotonoffWM( p );
-% savethis('trajectoryOnOffWM','fig');
-
-
-
-
 %% Min/Max Path
 stepDistance = zeros(n_seeds, Finaltimestep/acc - 1);
 for i = 1:n_seeds
@@ -317,10 +269,13 @@ minPath_seed = find( stepDistanceTotal == minPath );
 maxPath = max( stepDistanceTotal(:) ); 
 maxPath_seed = find( stepDistanceTotal == maxPath );
 
+
+
+
 %% Plot Min/Max
 if has_cancer
     for i=1: num_cancers
-        cellind = [ ];
+        cellind = [];
         for j = 1:n_seeds
             if (all( abs(cancer_center(i,:) - p(j).coord(:,end)') < cancer_size ))
                 cellind = [cellind, j];
@@ -388,61 +343,51 @@ savethis('minmaxpathOverall','jpg');
 disp( 'done' );
 
 %% Functions
-function [concentration, cgradX, cgradY, cgradZ, cancer_sd] = set_cancer(coh_map) 
-    global cancer_center cancer_size num_cancers curr_site_num
-    [Y,X,Z] = meshgrid(1:size(coh_map,2),1:size(coh_map,1),1:size(coh_map,3));
-    
-    % If multiple cancer sites exist, we assume they are all the same size
-    num_cancers = size(cancer_center,1);
-    cancer_sd = cancer_size+15;
-    curr_site_num = 0;
-    
-    concen_sd = [25 45 25]; 
-    concen_param = 2; 
-    
-    % If multiple cancer sites exist, take average of concentrations
-    concentration=0;
-    for i=1:num_cancers
-        concentration = concentration + 1./(1+(sqrt(((X - cancer_center(i,1))/concen_sd(1)).^2+((Y - cancer_center(i,2))/concen_sd(1)).^2+((Z - cancer_center(i,3))/concen_sd(1)).^2)).^concen_param);    
-    end
-    concentration = concentration/num_cancers;
-    
-    % valcap = concentration at border of cancer
-    valcap = 1./(1+(sqrt(((cancer_size(1))/concen_sd(1)).^2+((0)/concen_sd(1)).^2+((0)/concen_sd(1)).^2)).^concen_param);      
-    concentration(concentration > valcap) = valcap;
-    concentration( coh_map==0 ) = 0; 
-    
-    cgradX = zeros(size(X));
-    cgradX(2:end-1,:,:) = concentration(3:end,:,:) - concentration(1:end-2,:,:);
+function load_3D()
+    global eigen_map coh_map
+    % OPEN AND LOAD EIGENVECTOR AND FRACTIONAL ANISOTROPY FILE
+    EV_file = strcat('Anistropy_Files/CTRLP60_avg_vec.img');
+    FA_file = strcat('Anistropy_Files/CTRLP60_avg_fa.img');
+    fid = fopen(EV_file,'r');
+    EV = fread(fid,'float32','ieee-le');
+    EV = permute(reshape(EV,3,200,280,128),[2,3,4,1]);
+    fclose(fid);
 
-    cgradY = zeros(size(X));
-    cgradY(:,2:end-1,:) = concentration(:,3:end,:) - concentration(:,1:end-2,:);
+    % fractional anisotropy 
+    fid = fopen(FA_file,'r');
+    FA = fread(fid,'float32','ieee-le');
+    FA = reshape(FA,200,280,128);
+    fclose(fid);
 
-    cgradZ = zeros(size(X));
-    cgradZ(:,:,2:end-1) = concentration(:,:,3:end) - concentration(:,:,1:end-2);
+    % INTERPOLATE TO THE APPROPRIATE SIZE
+    limits = [21,180,21,160,36,105];    scale = 2;
+    EV = EV(limits(1):limits(2),limits(3):limits(4),limits(5):limits(6),:);
+    EV_x = interp3(EV(:,:,:,1),scale);  EV_y = interp3(EV(:,:,:,2),scale);  EV_z = interp3(EV(:,:,:,3),scale);
+    clear EV; 
+    EV(:,:,:,1) = EV_x; EV(:,:,:,2) = EV_y; EV(:,:,:,3) = EV_z;    
+    clear EV_x EV_y EV_z
+
+    FA = interp3(FA(limits(1):limits(2),limits(3):limits(4),limits(5):limits(6)),scale);
     
-    % find largest vector magnitude
-    L = (cgradX.^2 + cgradY.^2 + cgradZ.^2).^(.5);
-    maxL = max(max(L));
-
-    % normalize gradient
-    cgradX = cgradX./maxL;
-    cgradY = cgradY./maxL;
-    cgradZ = cgradZ./maxL;
+    eigen_map = EV;
+    coh_map = FA;
 end
 
-function [seed_ind,seed_sd,indup,inddown] = set_initial(coh_map) 
-    global modelType inj_center
-    [Y,X,Z] = meshgrid(1:size(coh_map,2),1:size(coh_map,1),1:size(coh_map,3));
-    
+function [seed_ind, has_cancer] = set_initial() 
+    global coh_map modelType seed_sd cancer_center ubound lbound inj_center has_cancer
+        
     switch modelType
     case 'Intranasal'
-        inj_center =    [319 100 66];
+        inj_center =    [319, 100, 66];
     case 'Intracerebral'
         inj_center =    [450, 270, 170];
     end
     
-    seed_sd = 10; 
+    has_cancer = ~isempty(cancer_center);
+    
+    [Y,X,Z] = meshgrid(1:size(coh_map,2),1:size(coh_map,1),1:size(coh_map,3));
+    
+    seed_sd = 10;
     seed_ROI = sqrt((X-inj_center(1)).^2 + (Y-inj_center(2)).^2 + (Z-inj_center(3)).^2)<seed_sd;   
     seed_ind = find(seed_ROI);
     
@@ -459,37 +404,54 @@ function [seed_ind,seed_sd,indup,inddown] = set_initial(coh_map)
         end
       end
     end
+    ubound = indup;
+    lbound = inddown;
 end
 
-function [EV, FA] = load_3D()
-    % OPEN AND LOAD EIGENVECTOR AND FRACTIONAL ANISOTROPY FILE
-    EV_file = strcat('../NSC_atlas_and_path_simulation/CTRLP60_avg_vec.img');
-    FA_file = strcat('../NSC_atlas_and_path_simulation/CTRLP60_avg_fa.img');
-    fid = fopen(EV_file,'r');
-    EV = fread(fid,'float32','ieee-le');
-    EV = permute(reshape(EV,3,200,280,128),[2,3,4,1]);
-    fclose(fid);
+function [concentration, cgradX, cgradY, cgradZ] = set_cancer()
+    global coh_map cancer_center cancer_size num_cancers curr_site_num
+    [Y,X,Z] = meshgrid(1:size(coh_map,2),1:size(coh_map,1),1:size(coh_map,3));
 
-    % fractional anisotropy 
-    fid = fopen(FA_file,'r');
-    FA = fread(fid,'float32','ieee-le');
-    FA = reshape(FA,200,280,128);
-    fclose(fid);
+    % If multiple cancer sites exist, we assume they are all the same size
+    num_cancers = size(cancer_center,1);
+    curr_site_num = 0;
 
-    % INTERPOLATE TO THE APPROPRIATE SIZE
-    limits = [21,180,21,160,36,105];    scale = 2;
-    %limits = [1,200,1,280,1,128];    scale = 0;
-    EV = EV(limits(1):limits(2),limits(3):limits(4),limits(5):limits(6),:);
-    EV_x = interp3(EV(:,:,:,1),scale);  EV_y = interp3(EV(:,:,:,2),scale);  EV_z = interp3(EV(:,:,:,3),scale);
-    clear EV; 
-    EV(:,:,:,1) = EV_x; EV(:,:,:,2) = EV_y; EV(:,:,:,3) = EV_z;    
-    clear EV_x EV_y EV_z
+    concen_sd = [25 45 25]; 
+    concen_param = 2; 
 
-    FA = interp3(FA(limits(1):limits(2),limits(3):limits(4),limits(5):limits(6)),scale);
-end 
+    % If multiple cancer sites exist, take average of concentrations
+    concentration=0;
+    for i=1:num_cancers
+        concentration = concentration + 1./(1+(sqrt(((X - cancer_center(i,1))/concen_sd(1)).^2+((Y - cancer_center(i,2))/concen_sd(1)).^2+((Z - cancer_center(i,3))/concen_sd(1)).^2)).^concen_param);    
+    end
+    concentration = concentration/num_cancers;
+
+    % valcap = concentration at border of cancer
+    valcap = 1./(1+(sqrt(((cancer_size(1))/concen_sd(1)).^2+((0)/concen_sd(1)).^2+((0)/concen_sd(1)).^2)).^concen_param);      
+    concentration(concentration > valcap) = valcap;
+    concentration( coh_map==0 ) = 0; 
+
+    cgradX = zeros(size(X));
+    cgradX(2:end-1,:,:) = concentration(3:end,:,:) - concentration(1:end-2,:,:);
+
+    cgradY = zeros(size(X));
+    cgradY(:,2:end-1,:) = concentration(:,3:end,:) - concentration(:,1:end-2,:);
+
+    cgradZ = zeros(size(X));
+    cgradZ(:,:,2:end-1) = concentration(:,:,3:end) - concentration(:,:,1:end-2);
+
+    % find largest vector magnitude
+    L = (cgradX.^2 + cgradY.^2 + cgradZ.^2).^(.5);
+    maxL = max(max(L));
+
+    % normalize gradient
+    cgradX = cgradX./maxL;
+    cgradY = cgradY./maxL;
+    cgradZ = cgradZ./maxL;   
+end
 
 function filename = savethis(casename,type)
-    global modelType d_w d_g chemo_sensitivity alpha4chmtx beta4dist cancer_center FolderName1 FolderName2 has_cancer num_cancers curr_site_num;    
+    global modelType d_w d_g chemo_sensitivity alpha4chmtx beta4dist cancer_center has_cancer num_cancers curr_site_num;    
     
     if has_cancer
         if num_cancers > 1
@@ -514,20 +476,20 @@ function filename = savethis(casename,type)
                                     num2str(cancer_center(3)),']');
         end
         
-        filename = strcat( FolderName2, '3D_210511__', casename,'_',modelType, '_d',num2str(d_w), '_dg',num2str(d_g), ...
+        filename = strcat( '3D_', casename,'_',modelType, '_d',num2str(d_w), '_dg',num2str(d_g), ...
             '_a',num2str(alpha4chmtx), '_b',num2str(beta4dist), '_c',num2str(chemo_sensitivity), '_',cancer_loc, '.',type);
         titletext = strcat( casename,', ',modelType,', dw',num2str(d_w),', dg',num2str(d_g),', a',num2str(alpha4chmtx), ...
                 ', b',num2str(beta4dist),', c',num2str(chemo_sensitivity),', ',cancer_loc);
     else
         cancer_loc = '[NA]';
-        filename = strcat( FolderName1, '3D_210511__', casename,'_',modelType, '_dw',num2str(d_w), '_dg',num2str(d_g), ...
+        filename = strcat( '3D_', casename,'_',modelType, '_dw',num2str(d_w), '_dg',num2str(d_g), ...
             '_b',num2str(beta4dist), '_',cancer_loc, '.',type);
         titletext = strcat( casename,', ',modelType,', dw',num2str(d_w),', dg',num2str(d_g),', b',num2str(beta4dist),', ',cancer_loc);
     end
         
     if ~strcmp(type,'mat')
         title( titletext );
-        saveas(gcf, [pwd filename]);
+        saveas(gcf, filename);
     end
 end
 
@@ -560,62 +522,4 @@ function plotenvironment(coherency_value)
     hold on; plot3( X(ii(1:100:end)),Y(ii(1:100:end)),Z(ii(1:100:end)),'b.');                               %Plot WM track
     
     xlabel('x'); ylabel('y'); zlabel('z'); grid on; axis equal; daspect([1 1 1]); camlight;
-end
-
-function plotonoffWM(p)
-    global coh_limit coh_map eigen_map;
-    [Y,X,Z] = meshgrid(1:size(coh_map,2),1:size(coh_map,1),1:size(coh_map,3));
-    
-    isOnWM = @(x) (coh_map(x) > coh_limit);
-    for i=1: size(p,2)
-        p_temp = p(i).coord;
-        ind = sub2ind( size(coh_map),round(p_temp(1,:)),round(p_temp(2,:)),round(p_temp(3,:)) );
-        
-        %Set all p from p_temp that ARE NOT on WM to 0
-        p_on = p_temp .* isOnWM(ind);
-        p_on(p_on == 0) = NaN;
-        %Set all p from p_temp that ARE on WM to 0
-        p_off = p_temp .* ~isOnWM(ind);
-        p_off(p_off == 0) = NaN;
-        
-        %Connect ends of p_on and p_off to plot seemless lines
-        onNaN=0;
-        for j=1: size(p_temp,2)-1
-            if all( isnan(p_off(:,j+1)) )
-                if ~onNaN
-                    p_on(:,j)=p_off(:,j);
-                    onNaN=1;
-                end
-            else
-                onNaN=0;
-            end
-        end
-        onNaN=0;
-        for j=1: size(p_temp,2)-1
-            if all( isnan(p_on(:,j+1)) )
-                if ~onNaN
-                    p_off(:,j)=p_on(:,j);
-                    onNaN=1;
-                end
-            else
-                onNaN=0;
-            end
-        end
-        
-%         hold on; plot3(p_on(1,:),p_on(2,:),p_on(3,:),'Color',[0.6350 0.0780 0.1840],'linewidth',3);         %Plot path of seed on WM
-%         hold on; plot3(p_off(1,:),p_off(2,:),p_off(3,:),'Color',[0 0.4470 0.7410],'linewidth',3);           %Plot path of seed off WM
-
-        emap_reshaped = reshape( eigen_map, numel(coh_map), 3 ); 
-        
-        %Plot eigen vects on WM
-        ind_on = sub2ind( size(coh_map),round(p_on(1,:)),round(p_on(2,:)),round(p_on(3,:)) );
-        ind_on = ind_on(~isnan(ind_on));
-        hold on; quiver3( X(ind_on),Y(ind_on),Z(ind_on),emap_reshaped(ind_on,1)',emap_reshaped(ind_on,2)',emap_reshaped(ind_on,3)','Color',[0.6350 0.0780 0.1840],'AutoScaleFactor',0.1);
-        %Plot eigen vects off WM
-        ind_off = sub2ind( size(coh_map),round(p_off(1,:)),round(p_off(2,:)),round(p_off(3,:)) );
-        ind_off = ind_off(~isnan(ind_off));
-%         hold on; quiver3( X(ind_off),Y(ind_off),Z(ind_off),emap_reshaped(ind_off,1)',emap_reshaped(ind_off,2)',emap_reshaped(ind_off,3)','Color',[0 0.4470 0.7410],'AutoScaleFactor',0.1);
-            
-%         plot3( p_temp(1,:), p_temp(2,:), p_temp(3,:), 'k.' );                                               %Plot trajectory dots 
-    end
 end
